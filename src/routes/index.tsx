@@ -23,9 +23,21 @@ function Index() {
   const [status, setStatus] = useState("Selecione a pasta da série DICOM.");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ blob: Blob; name: string } | null>(null);
+
+  function download() {
+    if (!result) return;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(result.blob);
+    a.download = result.name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 30_000);
+  }
 
   async function run() {
-    setError(""); setBusy(true); setProgress(0);
+    setError(""); setBusy(true); setProgress(0); setResult(null);
     try {
       const R = await import("@/lib/dicom-resample");
       setStatus("Lendo cabeçalhos...");
@@ -38,16 +50,10 @@ function Index() {
         gb: (shape.rows * shape.cols * shape.slices * 2) / 1024 ** 3,
       });
 
-      // Output: write straight to a folder when supported, else stream a ZIP.
-      const w = window as any;
-      let dir: any = null;
-      if (w.showDirectoryPicker) {
-        dir = await w.showDirectoryPicker({ mode: "readwrite" });
-        for await (const _ of dir.values()) { void _; throw new Error("A pasta de saída precisa estar vazia."); }
-      }
+      // Output: stream everything into a ZIP in memory, then offer a download button.
       const { Zip, ZipPassThrough } = await import("fflate");
       const chunks: BlobPart[] = [];
-      const zip = dir ? null : new Zip((err, d) => { if (err) throw err; chunks.push(d as BlobPart); });
+      const zip = new Zip((err, d) => { if (err) throw err; chunks.push(d as BlobPart); });
 
       const template = await R.loadTemplate(g);
       const seriesUid = R.newUid();
@@ -58,25 +64,16 @@ function Index() {
         const px = await R.resampleSlice(z, g, cache, shape, spacing);
         const buf = R.saveSlice(template, px, g, z, shape, spacing, seriesUid, frameUid);
         const name = `IM_${String(z + 1).padStart(6, "0")}.dcm`;
-        if (dir) {
-          const fh = await dir.getFileHandle(name, { create: true });
-          const ws = await fh.createWritable(); await ws.write(buf); await ws.close();
-        } else {
-          const f = new ZipPassThrough(name); zip!.add(f); f.push(new Uint8Array(buf), true);
-        }
+        const f = new ZipPassThrough(name); zip.add(f); f.push(new Uint8Array(buf), true);
         const el = (performance.now() - t0) / 1000;
         const rem = ((shape.slices - z - 1) * el) / (z + 1);
         setProgress(((z + 1) / shape.slices) * 100);
         setStatus(`${z + 1}/${shape.slices} fatias · restante ${(rem / 60).toFixed(1)} min`);
         if (z % 4 === 0) await new Promise((r) => setTimeout(r));
       }
-      if (zip) {
-        zip.end();
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(new Blob(chunks, { type: "application/zip" }));
-        a.download = `resample_${spacing}mm.zip`; a.click();
-      }
-      setStatus(`Concluído: ${shape.slices} arquivos gerados.`);
+      zip.end();
+      setResult({ blob: new Blob(chunks, { type: "application/zip" }), name: `resample_${spacing}mm.zip` });
+      setStatus(`Concluído: ${shape.slices} arquivos gerados. Clique em Baixar ZIP.`);
     } catch (e: any) {
       setError(e?.message ?? String(e)); setStatus("Falhou.");
     } finally { setBusy(false); }
@@ -123,9 +120,15 @@ function Index() {
           <div className="h-full bg-primary transition-all" style={{ width: `${progress}%` }} />
         </div>
         <p className="mt-2 font-mono text-sm text-muted-foreground">{status}</p>
+        {result && (
+          <button onClick={download}
+            className="mt-4 rounded-md bg-primary px-5 py-2.5 font-medium text-primary-foreground">
+            Baixar ZIP ({(result.blob.size / 1024 ** 2).toFixed(1)} MB)
+          </button>
+        )}
         {error && <p className="mt-2 rounded-md border border-destructive/40 p-3 text-sm text-destructive">{error}</p>}
         <p className="mt-10 text-xs text-muted-foreground">
-          Suporta DICOM sem compressão. No Chrome/Edge você escolhe a pasta de saída (vazia); nos demais, baixa um ZIP.
+          Suporta DICOM sem compressão. O resultado é baixado como um arquivo ZIP.
         </p>
       </div>
     </main>
