@@ -28,3 +28,4 @@ use the editor.
   own key and store it in Secrets.
 - **Secrets.** Lovable manages them. Do not put secret values in the repo.
 <!-- LOVABLE:END -->
+- DICOM resampling runs fully client-side (src/lib/dicom-resample.ts, dcmjs + fflate); loaded via dynamic import to stay out of SSR.
